@@ -12,6 +12,7 @@ mod fs;
 mod gdt;
 mod interrupts;
 mod memory;
+mod network; // Новый модуль
 mod serial;
 mod shell;
 mod vga_buffer;
@@ -48,6 +49,22 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("[OK] Heap allocator initialized");
     println!("[OK] Serial port initialized");
     println!("[OK] RAM disk initialized");
+
+    // Инициализация сети
+    match network::init_network() {
+        Ok(_) => {
+            println!("[OK] Network stack initialized");
+            let (ip, mac) = network::get_network_info();
+            println!(
+                "[INFO] IP: {}, MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                ip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            );
+        }
+        Err(e) => {
+            println!("[WARN] Network initialization failed: {}", e);
+        }
+    }
+
     serial_println!("[OK] All systems operational");
     println!();
     println!("System ready! Type 'help' for available commands.");

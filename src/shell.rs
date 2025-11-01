@@ -7,7 +7,6 @@ use spin::Mutex;
 
 const BACKSPACE: u8 = 8;
 
-// Безопасные глобальные переменные с использованием Mutex
 lazy_static! {
     static ref COMMAND_BUFFER: Mutex<Option<String>> = Mutex::new(None);
     static ref CURRENT_PATH: Mutex<String> = Mutex::new("/".to_string());
@@ -33,7 +32,7 @@ pub fn handle_key(character: char) {
             println!();
             let cmd = buffer.trim().to_string();
             buffer.clear();
-            drop(buffer_guard); // Освобождаем блокировку перед обработкой команды
+            drop(buffer_guard);
             process_command(&cmd);
             print_prompt();
         } else if character as u8 == BACKSPACE {
@@ -43,7 +42,6 @@ pub fn handle_key(character: char) {
             }
         } else if character.is_ascii() && !character.is_control() {
             buffer.push(character);
-            // Просто выводим символ без цветовой подсветки
             print!("{}", character);
         }
     }
@@ -89,6 +87,107 @@ fn process_command(cmd: &str) {
             println!("  diskinfo             - Show disk usage");
             println!("  pwd                  - Print working directory");
             println!("  stat <path>          - Show file information");
+            println!();
+
+            crate::vga_buffer::write_colored_text("Network Commands:", Color::Magenta);
+            println!("  ping <ip>            - Ping a remote host");
+            println!("  netinfo              - Display network information");
+            println!("  setip <ip>           - Set IP address");
+        }
+        "ping" => {
+            if parts.len() < 2 {
+                crate::vga_buffer::write_colored_text("Usage: ping <ip>", Color::LightRed);
+                println!();
+                return;
+            }
+
+            let ip_str = parts[1];
+            match crate::network::Ipv4Address::from_str(ip_str) {
+                Ok(ip) => {
+                    crate::vga_buffer::write_colored_text("Pinging ", Color::Cyan);
+                    crate::vga_buffer::write_colored_text(ip_str, Color::Yellow);
+                    println!("...");
+                    println!();
+
+                    match crate::network::ping(ip) {
+                        Ok(_) => {
+                            crate::vga_buffer::write_colored_text("✓ Ping completed", Color::Green);
+                            println!();
+                        }
+                        Err(e) => {
+                            crate::vga_buffer::write_colored_text("✗ Ping failed: ", Color::Red);
+                            println!("{}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::vga_buffer::write_colored_text("✗ Error: ", Color::Red);
+                    println!("{}", e);
+                }
+            }
+        }
+        "netinfo" => {
+            crate::vga_buffer::write_colored_text("Network Information:", Color::White);
+            println!();
+
+            let info = crate::network::get_detailed_network_info();
+
+            print!("  Status:      ");
+            if info.is_initialized {
+                crate::vga_buffer::write_colored_text("Online", Color::Green);
+            } else {
+                crate::vga_buffer::write_colored_text("Offline", Color::Red);
+            }
+            println!();
+
+            print!("  IP Address:  ");
+            crate::vga_buffer::write_colored_text(
+                &alloc::format!("{}", info.ip_address),
+                Color::Cyan,
+            );
+            println!();
+
+            print!("  MAC Address: ");
+            crate::vga_buffer::write_colored_text(
+                &alloc::format!("{}", info.mac_address),
+                Color::Yellow,
+            );
+            println!();
+
+            print!("  Gateway:     ");
+            crate::vga_buffer::write_colored_text(&alloc::format!("{}", info.gateway), Color::Cyan);
+            println!();
+
+            print!("  Netmask:     ");
+            crate::vga_buffer::write_colored_text(&alloc::format!("{}", info.netmask), Color::Cyan);
+            println!();
+
+            println!();
+            crate::vga_buffer::write_colored_text("Network Statistics:", Color::White);
+            println!();
+            println!("  Packets sent: {}", info.stats.packets_sent);
+            println!("  Packets received: {}", info.stats.packets_received);
+            println!("  Ping requests: {}", info.stats.ping_requests);
+            println!("  Ping replies: {}", info.stats.ping_replies);
+        }
+        "setip" => {
+            if parts.len() < 2 {
+                crate::vga_buffer::write_colored_text("Usage: setip <ip>", Color::LightRed);
+                println!();
+                return;
+            }
+
+            match crate::network::set_ip_address(parts[1]) {
+                Ok(_) => {
+                    crate::vga_buffer::write_colored_text("✓ IP address set to ", Color::Green);
+                    crate::vga_buffer::write_colored_text(parts[1], Color::Cyan);
+                    println!();
+                }
+                Err(e) => {
+                    crate::vga_buffer::write_colored_text("✗ Error: ", Color::Red);
+                    println!("{}", e);
+                }
+            }
         }
         "clear" | "cls" => {
             crate::vga_buffer::clear_screen();
@@ -105,7 +204,7 @@ fn process_command(cmd: &str) {
             crate::vga_buffer::write_colored_text("Built with Rust (bare-metal)", Color::Cyan);
             println!();
             crate::vga_buffer::write_colored_text(
-                "Features: Serial Port, Hierarchical File System",
+                "Features: Serial Port, File System, Network Stack",
                 Color::Green,
             );
             println!();

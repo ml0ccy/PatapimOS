@@ -901,7 +901,7 @@ pub fn init_network() -> Result<(), &'static str> {
         }
     }
 
-    // Исправляем заимствование - сохраняем значения в локальные переменные
+    // ИСПРАВЛЯЕМ заимствование - сохраняем значения в локальные переменные
     let ip_address = stack.ip_address;
     let mac_address = stack.mac_address;
     let gateway = stack.gateway;
@@ -1007,7 +1007,7 @@ pub fn set_ip_address(ip_str: &str) -> Result<(), &'static str> {
     let ip = Ipv4Address::from_str(ip_str)?;
     let mut stack = NETWORK_STACK.lock();
 
-    // Исправляем заимствование
+    // ИСПРАВЛЯЕМ заимствование
     let old_ip = stack.ip_address;
     let mac_address = stack.mac_address;
 

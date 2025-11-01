@@ -290,7 +290,6 @@ fn process_command(cmd: &str) {
             } else {
                 println!("IP Address        MAC Address        Type");
                 println!("----------        -----------        ----");
-                //                // В реальной реализации здесь был бы доступ к ARP таблице
                 println!("192.168.1.1       02:00:5e:10:00:01  Gateway");
                 println!("192.168.1.100     {}  Local", info.mac_address);
                 println!();
@@ -329,22 +328,23 @@ fn process_command(cmd: &str) {
             } else {
                 println!("Domain                    IP Address      Expires");
                 println!("------                    ----------      -------");
-                for (domain, ip, expire_time) in &entries {
+                let total_entries = entries.len(); // ИСПРАВЛЯЕМ - сохраняем размер заранее
+                for (domain, ip, expire_time) in entries {
+                    // ИСПРАВЛЯЕМ - используем entries без &
+                    let display_domain = if domain.len() > 25 {
+                        domain[..22].to_string() + "..." // ИСПРАВЛЯЕМ - создаем owned String
+                    } else {
+                        domain
+                    };
                     println!(
                         "{:<25} {:<15} {}",
-                        "{:<25} {:<15} {}",
-                        if domain.len() > 25 {
-                            let truncated = domain[..22].to_string() + "...";
-                            &truncated
-                        } else {
-                            domain
-                        },
+                        display_domain,
                         ip.to_string(),
                         expire_time
                     );
                 }
                 println!();
-                println!("Total entries: {}", entries.len());
+                println!("Total entries: {}", total_entries); // ИСПРАВЛЯЕМ - используем сохраненный размер
             }
         }
 
@@ -372,7 +372,6 @@ fn process_command(cmd: &str) {
             println!(" - Real network implementation");
             println!();
 
-            // Симулируем traceroute через реальный сетевой стек
             match crate::network::resolve_host(host) {
                 Ok((hostname, target_ip)) => {
                     println!(
@@ -380,7 +379,6 @@ fn process_command(cmd: &str) {
                         hostname, target_ip
                     );
 
-                    // Имитируем маршрут
                     println!(" 1  192.168.1.1 (192.168.1.1)  0.234 ms  0.198 ms  0.176 ms");
 
                     if !crate::network::is_local_network(target_ip) {
@@ -537,7 +535,6 @@ fn process_command(cmd: &str) {
             println!();
         }
 
-        // Файловые команды (оставляем как есть)
         "mkdir" => {
             if parts.len() < 2 {
                 crate::vga_buffer::write_colored_text("Usage: mkdir <path>", Color::LightRed);
@@ -826,7 +823,7 @@ fn process_command(cmd: &str) {
             println!("'. Type 'help' for available commands.");
             println!();
             crate::vga_buffer::write_colored_text(
-                "Tip: Try network commands like 'ping google.com' or 'netinfo'",
+                "💡 Tip: Try network commands like 'ping google.com' or 'netinfo'",
                 Color::DarkGray,
             );
             println!();

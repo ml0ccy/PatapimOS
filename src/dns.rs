@@ -1,10 +1,9 @@
 //! Реальный DNS клиент с отправкой UDP пакетов через сетевой стек
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use byteorder::{BigEndian, ByteOrder};
-
 
 // DNS константы
 const DNS_PORT: u16 = 53;

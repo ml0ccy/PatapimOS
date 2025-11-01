@@ -328,11 +328,11 @@ fn process_command(cmd: &str) {
             } else {
                 println!("Domain                    IP Address      Expires");
                 println!("------                    ----------      -------");
-                let total_entries = entries.len(); // ИСПРАВЛЯЕМ - сохраняем размер заранее
-                for (domain, ip, expire_time) in entries {
-                    // ИСПРАВЛЯЕМ - используем entries без &
+                let total_entries = entries.len();
+                for entry in entries {
+                    let (domain, ip, expire_time) = entry;
                     let display_domain = if domain.len() > 25 {
-                        domain[..22].to_string() + "..." // ИСПРАВЛЯЕМ - создаем owned String
+                        domain[..22].to_string() + "..."
                     } else {
                         domain
                     };
@@ -344,7 +344,7 @@ fn process_command(cmd: &str) {
                     );
                 }
                 println!();
-                println!("Total entries: {}", total_entries); // ИСПРАВЛЯЕМ - используем сохраненный размер
+                println!("Total entries: {}", total_entries);
             }
         }
 

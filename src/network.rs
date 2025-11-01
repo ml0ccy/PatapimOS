@@ -655,7 +655,6 @@ pub struct NetworkStack {
     pub ip_address: Ipv4Address,
     pub netmask: Ipv4Address,
     pub gateway: Ipv4Address,
-    pub dns_servers: Vec<Ipv4Address>,
     pub mac_address: MacAddress,
     pub dns_client: DnsClient,
     pub driver: Box<RTL8139Driver>,
@@ -691,12 +690,6 @@ impl NetworkStack {
             ip_address: Ipv4Address::new(192, 168, 1, 100),
             netmask: Ipv4Address::new(255, 255, 255, 0),
             gateway: Ipv4Address::new(192, 168, 1, 1),
-            dns_servers: vec![
-                Ipv4Address::new(8, 8, 8, 8),
-                Ipv4Address::new(8, 8, 4, 4),
-                Ipv4Address::new(1, 1, 1, 1),
-                Ipv4Address::new(208, 67, 222, 222),
-            ],
             mac_address: MacAddress::zero(),
             dns_client: DnsClient::new(),
             driver: Box::new(RTL8139Driver::new()),
@@ -871,6 +864,15 @@ impl NetworkStack {
             }
         }
     }
+
+    pub fn get_dns_servers(&self) -> Vec<Ipv4Address> {
+        vec![
+            Ipv4Address::new(8, 8, 8, 8),
+            Ipv4Address::new(8, 8, 4, 4),
+            Ipv4Address::new(1, 1, 1, 1),
+            Ipv4Address::new(208, 67, 222, 222),
+        ]
+    }
 }
 
 lazy_static! {
@@ -901,7 +903,6 @@ pub fn init_network() -> Result<(), &'static str> {
         }
     }
 
-    // ИСПРАВЛЯЕМ заимствование - сохраняем значения в локальные переменные
     let ip_address = stack.ip_address;
     let mac_address = stack.mac_address;
     let gateway = stack.gateway;
@@ -990,7 +991,7 @@ pub fn get_detailed_network_info() -> NetworkInfo {
         mac_address: stack.mac_address,
         gateway: stack.gateway,
         netmask: stack.netmask,
-        dns_servers: stack.dns_servers.clone(),
+        dns_servers: stack.get_dns_servers(),
         is_initialized: stack.is_initialized,
         is_link_up: stack.is_link_up,
         stats: stack.stats.clone(),
@@ -1007,7 +1008,6 @@ pub fn set_ip_address(ip_str: &str) -> Result<(), &'static str> {
     let ip = Ipv4Address::from_str(ip_str)?;
     let mut stack = NETWORK_STACK.lock();
 
-    // ИСПРАВЛЯЕМ заимствование
     let old_ip = stack.ip_address;
     let mac_address = stack.mac_address;
 

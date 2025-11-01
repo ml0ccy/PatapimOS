@@ -272,10 +272,10 @@ impl DnsClient {
         self.cache_misses += 1;
         crate::serial_println!("DNS: Resolving {} via real DNS query", domain);
 
-        // Получаем список DNS серверов
+        // Получаем список DNS серверов из NetworkStack
         let dns_servers = {
             let stack = crate::network::NETWORK_STACK.lock();
-            stack.dns_servers.clone()
+            stack.get_dns_servers()
         };
 
         // Пробуем каждый DNS сервер

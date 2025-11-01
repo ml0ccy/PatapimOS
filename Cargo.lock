@@ -7,6 +7,7 @@ name = "PatapimOS"
 version = "0.3.0"
 dependencies = [
  "bootloader",
+ "byteorder",
  "lazy_static",
  "linked_list_allocator",
  "pc-keyboard",
@@ -39,6 +40,12 @@ name = "bootloader"
 version = "0.9.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bdfddac270bbdd45903296bc1caf29a7fdce6b326aaf0bbab7f04c5f98b7447"
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "lazy_static"

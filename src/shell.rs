@@ -487,6 +487,34 @@ fn process_command(cmd: &str) {
             );
             println!();
         }
+        // Добавить к существующим командам:
+        "cleardns" => match crate::network::clear_dns_cache() {
+            Ok(_) => {
+                crate::vga_buffer::write_colored_text("✓ DNS cache cleared", Color::Green);
+                println!();
+            }
+            Err(e) => {
+                crate::vga_buffer::write_colored_text("✗ Error: ", Color::Red);
+                println!("{}", e);
+            }
+        },
+        "dnscache" => {
+            crate::vga_buffer::write_colored_text("DNS Cache Entries:", Color::White);
+            println!();
+
+            let entries = crate::network::get_dns_cache_entries();
+            if entries.is_empty() {
+                println!("  No entries in cache");
+            } else {
+                for (domain, ip, expire_time) in entries {
+                    print!("  ");
+                    crate::vga_buffer::write_colored_text(&domain, Color::Cyan);
+                    print!(" -> ");
+                    crate::vga_buffer::write_colored_text(&alloc::format!("{}", ip), Color::Yellow);
+                    println!(" (expires: {})", expire_time);
+                }
+            }
+        }
         "reboot" => {
             crate::vga_buffer::write_colored_text("Rebooting...", Color::LightRed);
             println!();

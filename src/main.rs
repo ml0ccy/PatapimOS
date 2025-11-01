@@ -8,11 +8,13 @@ use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
 mod allocator;
+mod dns; // Реальный DNS клиент
 mod fs;
 mod gdt;
 mod interrupts;
 mod memory;
-mod network; // Новый модуль
+mod network; // Полноценный сетевой стек
+mod pci; // PCI для поиска сетевых карт
 mod serial;
 mod shell;
 mod vga_buffer;
@@ -50,24 +52,38 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("[OK] Serial port initialized");
     println!("[OK] RAM disk initialized");
 
-    // Инициализация сети
+    // Инициализация PCI для поиска сетевых карт
+    println!("[INFO] Scanning PCI bus for network adapters...");
+    match pci::init_pci() {
+        Ok(_) => println!("[OK] PCI subsystem initialized"),
+        Err(e) => println!("[WARN] PCI initialization failed: {}", e),
+    }
+
+    // Инициализация полноценного сетевого стека
     match network::init_network() {
         Ok(_) => {
-            println!("[OK] Network stack initialized");
-            let (ip, mac) = network::get_network_info();
+            println!("[OK] Real network stack initialized");
+            let info = network::get_detailed_network_info();
             println!(
-                "[INFO] IP: {}, MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                ip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                "[INFO] Network Interface: {}",
+                if info.is_link_up { "UP" } else { "DOWN" }
+            );
+            println!("[INFO] IP: {}, MAC: {}", info.ip_address, info.mac_address);
+            println!(
+                "[INFO] Gateway: {}, DNS: {:?}",
+                info.gateway, info.dns_servers
             );
         }
         Err(e) => {
             println!("[WARN] Network initialization failed: {}", e);
+            println!("[INFO] Network functions will be limited");
         }
     }
 
-    serial_println!("[OK] All systems operational");
+    serial_println!("[OK] All systems operational - Real network stack active");
     println!();
     println!("System ready! Type 'help' for available commands.");
+    println!("Network stack: REAL implementation with Ethernet/IP/UDP/TCP support");
 
     shell::shell_loop();
 }

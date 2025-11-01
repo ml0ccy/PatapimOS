@@ -6,6 +6,7 @@ version = 4
 name = "PatapimOS"
 version = "0.3.0"
 dependencies = [
+ "bitflags 2.10.0",
  "bootloader",
  "byteorder",
  "lazy_static",
@@ -14,6 +15,7 @@ dependencies = [
  "pic8259",
  "spin",
  "uart_16550",
+ "volatile 0.5.4",
  "x86_64",
 ]
 
@@ -146,6 +148,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
+name = "volatile"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05a5337d258c4ef40d920ffcc5a729278951d57e6596f8b62ca7d4827613e77"
+
+[[package]]
 name = "x86"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,5 +173,5 @@ dependencies = [
  "bit_field",
  "bitflags 2.10.0",
  "rustversion",
- "volatile",
+ "volatile 0.4.6",
 ]

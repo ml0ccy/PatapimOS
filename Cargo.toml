@@ -12,8 +12,10 @@ pic8259 = "0.11"
 pc-keyboard = "0.7"
 linked_list_allocator = "0.10"
 uart_16550 = "0.3"
-# Для работы с сетевыми пакетами
+# Для работы с сетевыми пакетами и низкоуровневой сетью
 byteorder = { version = "1.4", default-features = false }
+bitflags = "2.4"
+volatile = "0.5"
 
 [package.metadata.bootimage]
 test-args = ["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-serial", "stdio", "-display", "none"]

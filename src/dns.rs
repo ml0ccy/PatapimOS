@@ -1,15 +1,16 @@
-//! Реальный DNS клиент с отправкой UDP пакетов через сетевой стек
+//! Полноценный DNS клиент с реальными UDP запросами
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use byteorder::{BigEndian, ByteOrder};
+use spin::Mutex;
 
 // DNS константы
 const DNS_PORT: u16 = 53;
 const DNS_HEADER_SIZE: usize = 12;
 const DNS_MAX_LABEL_SIZE: usize = 63;
-const DNS_TIMEOUT_SECONDS: u64 = 5;
+const DNS_QUERY_TIMEOUT: u32 = 5000; // 5 секунд в миллисекундах
 
 // DNS типы записей
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,39 +23,19 @@ pub enum DnsRecordType {
     AAAA = 28, // IPv6 адрес
 }
 
-impl From<u16> for DnsRecordType {
-    fn from(value: u16) -> Self {
-        match value {
-            1 => DnsRecordType::A,
-            2 => DnsRecordType::NS,
-            5 => DnsRecordType::CNAME,
-            12 => DnsRecordType::PTR,
-            15 => DnsRecordType::MX,
-            28 => DnsRecordType::AAAA,
-            _ => DnsRecordType::A, // По умолчанию
-        }
-    }
-}
-
-// DNS классы
-#[derive(Debug, Clone, Copy)]
-pub enum DnsClass {
-    Internet = 1,
-}
-
 // DNS заголовок
-#[derive(Debug, Clone)]
-pub struct DnsHeader {
-    pub id: u16,
-    pub flags: u16,
-    pub questions: u16,
-    pub answers: u16,
-    pub authority: u16,
-    pub additional: u16,
+#[derive(Debug)]
+struct DnsHeader {
+    id: u16,
+    flags: u16,
+    questions: u16,
+    answers: u16,
+    authority: u16,
+    additional: u16,
 }
 
 impl DnsHeader {
-    pub fn new_query(id: u16) -> Self {
+    fn new_query(id: u16) -> Self {
         DnsHeader {
             id,
             flags: 0x0100, // Standard query, recursion desired
@@ -65,90 +46,91 @@ impl DnsHeader {
         }
     }
 
-    pub fn to_bytes(&self) -> [u8; DNS_HEADER_SIZE] {
+    fn to_bytes(&self) -> [u8; DNS_HEADER_SIZE] {
         let mut bytes = [0u8; DNS_HEADER_SIZE];
-        BigEndian::write_u16(&mut bytes[0..2], self.id);
-        BigEndian::write_u16(&mut bytes[2..4], self.flags);
-        BigEndian::write_u16(&mut bytes[4..6], self.questions);
-        BigEndian::write_u16(&mut bytes[6..8], self.answers);
-        BigEndian::write_u16(&mut bytes[8..10], self.authority);
-        BigEndian::write_u16(&mut bytes[10..12], self.additional);
+        bytes[0..2].copy_from_slice(&self.id.to_be_bytes());
+        bytes[2..4].copy_from_slice(&self.flags.to_be_bytes());
+        bytes[4..6].copy_from_slice(&self.questions.to_be_bytes());
+        bytes[6..8].copy_from_slice(&self.answers.to_be_bytes());
+        bytes[8..10].copy_from_slice(&self.authority.to_be_bytes());
+        bytes[10..12].copy_from_slice(&self.additional.to_be_bytes());
         bytes
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() < DNS_HEADER_SIZE {
             return Err("DNS header too short");
         }
 
         Ok(DnsHeader {
-            id: BigEndian::read_u16(&bytes[0..2]),
-            flags: BigEndian::read_u16(&bytes[2..4]),
-            questions: BigEndian::read_u16(&bytes[4..6]),
-            answers: BigEndian::read_u16(&bytes[6..8]),
-            authority: BigEndian::read_u16(&bytes[8..10]),
-            additional: BigEndian::read_u16(&bytes[10..12]),
+            id: u16::from_be_bytes([bytes[0], bytes[1]]),
+            flags: u16::from_be_bytes([bytes[2], bytes[3]]),
+            questions: u16::from_be_bytes([bytes[4], bytes[5]]),
+            answers: u16::from_be_bytes([bytes[6], bytes[7]]),
+            authority: u16::from_be_bytes([bytes[8], bytes[9]]),
+            additional: u16::from_be_bytes([bytes[10], bytes[11]]),
         })
     }
 
-    pub fn is_response(&self) -> bool {
+    fn is_response(&self) -> bool {
         (self.flags & 0x8000) != 0
     }
 
-    pub fn is_error(&self) -> bool {
-        (self.flags & 0x000F) != 0
-    }
-
-    pub fn get_response_code(&self) -> u8 {
+    fn response_code(&self) -> u8 {
         (self.flags & 0x000F) as u8
     }
 }
 
 // DNS вопрос
-#[derive(Debug, Clone)]
-pub struct DnsQuestion {
-    pub name: String,
-    pub record_type: DnsRecordType,
-    pub class: DnsClass,
+#[derive(Debug)]
+struct DnsQuestion {
+    name: String,
+    record_type: DnsRecordType,
+    class: u16, // 1 для Internet
 }
 
 impl DnsQuestion {
-    pub fn new(name: String) -> Self {
+    fn new(name: String, record_type: DnsRecordType) -> Self {
         DnsQuestion {
             name,
-            record_type: DnsRecordType::A,
-            class: DnsClass::Internet,
+            record_type,
+            class: 1, // Internet class
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
-        // Кодируем доменное имя
-        bytes.extend_from_slice(&encode_domain_name(&self.name));
+        // Кодируем доменное имя в DNS формате
+        for label in self.name.split('.') {
+            if label.len() > DNS_MAX_LABEL_SIZE || label.is_empty() {
+                continue;
+            }
+            bytes.push(label.len() as u8);
+            bytes.extend_from_slice(label.as_bytes());
+        }
+        bytes.push(0); // Завершающий нуль
 
-        // Добавляем тип и класс
-        let mut type_class = [0u8; 4];
-        BigEndian::write_u16(&mut type_class[0..2], self.record_type as u16);
-        BigEndian::write_u16(&mut type_class[2..4], self.class as u16);
-        bytes.extend_from_slice(&type_class);
+        // Добавляем тип записи и класс
+        bytes.extend_from_slice(&(self.record_type as u16).to_be_bytes());
+        bytes.extend_from_slice(&self.class.to_be_bytes());
 
         bytes
     }
 }
 
 // DNS ответ
-#[derive(Debug, Clone)]
-pub struct DnsAnswer {
-    pub name: String,
-    pub record_type: DnsRecordType,
-    pub class: DnsClass,
-    pub ttl: u32,
-    pub data: Vec<u8>,
+#[derive(Debug)]
+struct DnsAnswer {
+    name: String,
+    record_type: DnsRecordType,
+    class: u16,
+    ttl: u32,
+    data: Vec<u8>,
 }
 
 impl DnsAnswer {
-    pub fn get_ipv4(&self) -> Option<crate::network::Ipv4Address> {
+    fn get_ipv4(&self) -> Option<crate::network::Ipv4Address> {
         if self.record_type == DnsRecordType::A && self.data.len() == 4 {
             Some(crate::network::Ipv4Address::new(
                 self.data[0],
@@ -160,21 +142,95 @@ impl DnsAnswer {
             None
         }
     }
+
+    fn get_cname(&self) -> Option<String> {
+        if self.record_type == DnsRecordType::CNAME {
+            // Парсим доменное имя из данных
+            self.parse_domain_name(&self.data, 0)
+                .ok()
+                .map(|(name, _)| name)
+        } else {
+            None
+        }
+    }
+
+    fn parse_domain_name(
+        &self,
+        data: &[u8],
+        mut offset: usize,
+    ) -> Result<(String, usize), &'static str> {
+        let mut name = String::new();
+        let original_offset = offset;
+        let mut jumps = 0;
+
+        loop {
+            if offset >= data.len() {
+                return Err("Offset beyond data");
+            }
+
+            let length = data[offset];
+
+            if length == 0 {
+                offset += 1;
+                break;
+            }
+
+            // Проверяем сжатие имен
+            if (length & 0xC0) == 0xC0 {
+                if offset + 1 >= data.len() {
+                    return Err("Compressed name offset out of bounds");
+                }
+
+                let pointer = ((length & 0x3F) as u16) << 8 | data[offset + 1] as u16;
+                offset = pointer as usize;
+                jumps += 1;
+
+                if jumps > 10 {
+                    return Err("Too many compression jumps");
+                }
+                continue;
+            }
+
+            offset += 1;
+
+            if offset + length as usize > data.len() {
+                return Err("Label extends beyond data");
+            }
+
+            if !name.is_empty() {
+                name.push('.');
+            }
+
+            let label = core::str::from_utf8(&data[offset..offset + length as usize])
+                .map_err(|_| "Invalid UTF-8 in domain name")?;
+            name.push_str(label);
+            offset += length as usize;
+        }
+
+        Ok((
+            name,
+            if jumps > 0 {
+                original_offset + 2
+            } else {
+                offset
+            },
+        ))
+    }
 }
 
 // DNS пакет
 #[derive(Debug)]
-pub struct DnsPacket {
-    pub header: DnsHeader,
-    pub questions: Vec<DnsQuestion>,
-    pub answers: Vec<DnsAnswer>,
+struct DnsPacket {
+    header: DnsHeader,
+    questions: Vec<DnsQuestion>,
+    answers: Vec<DnsAnswer>,
 }
 
 impl DnsPacket {
-    pub fn new_query(domain: &str) -> Self {
-        let id = get_dns_id();
+    fn new_query(domain: &str, record_type: DnsRecordType) -> Self {
+        let id = get_dns_query_id();
         let header = DnsHeader::new_query(id);
-        let question = DnsQuestion::new(domain.to_string());
+        let question = DnsQuestion::new(domain.to_string(), record_type);
 
         DnsPacket {
             header,
@@ -183,7 +239,7 @@ impl DnsPacket {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         // Добавляем заголовок
@@ -197,7 +253,7 @@ impl DnsPacket {
         bytes
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+    fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < DNS_HEADER_SIZE {
             return Err("DNS packet too short");
         }
@@ -205,31 +261,169 @@ impl DnsPacket {
         let header = DnsHeader::from_bytes(&data[0..DNS_HEADER_SIZE])?;
         let mut offset = DNS_HEADER_SIZE;
 
-        // Парсим вопросы
-        let mut questions = Vec::new();
+        // Пропускаем вопросы (мы их знаем)
         for _ in 0..header.questions {
-            let (question, new_offset) = parse_question(&data, offset)?;
-            questions.push(question);
-            offset = new_offset;
+            offset = Self::skip_question(data, offset)?;
         }
 
         // Парсим ответы
         let mut answers = Vec::new();
         for _ in 0..header.answers {
-            let (answer, new_offset) = parse_answer(&data, offset)?;
+            let (answer, new_offset) = Self::parse_answer(data, offset)?;
             answers.push(answer);
             offset = new_offset;
         }
 
         Ok(DnsPacket {
             header,
-            questions,
+            questions: Vec::new(), // Не парсим вопросы обратно
             answers,
         })
     }
+
+    fn skip_question(data: &[u8], mut offset: usize) -> Result<usize, &'static str> {
+        // Пропускаем доменное имя
+        while offset < data.len() {
+            let length = data[offset];
+            if length == 0 {
+                offset += 1;
+                break;
+            }
+
+            if (length & 0xC0) == 0xC0 {
+                offset += 2; // Сжатое имя
+                break;
+            }
+
+            offset += 1 + length as usize;
+        }
+
+        // Пропускаем тип и класс (4 байта)
+        offset += 4;
+
+        if offset > data.len() {
+            return Err("Question extends beyond packet");
+        }
+
+        Ok(offset)
+    }
+
+    fn parse_answer(data: &[u8], mut offset: usize) -> Result<(DnsAnswer, usize), &'static str> {
+        // Парсим имя
+        let (name, new_offset) = Self::parse_name(data, offset)?;
+        offset = new_offset;
+
+        if offset + 10 > data.len() {
+            return Err("Answer record too short");
+        }
+
+        // Парсим тип, класс, TTL, длину данных
+        let record_type = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let class = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
+        let ttl = u32::from_be_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]);
+        let data_length = u16::from_be_bytes([data[offset + 8], data[offset + 9]]);
+
+        offset += 10;
+
+        if offset + data_length as usize > data.len() {
+            return Err("Answer data extends beyond packet");
+        }
+
+        let answer_data = data[offset..offset + data_length as usize].to_vec();
+        offset += data_length as usize;
+
+        let record_type_enum = match record_type {
+            1 => DnsRecordType::A,
+            2 => DnsRecordType::NS,
+            5 => DnsRecordType::CNAME,
+            12 => DnsRecordType::PTR,
+            15 => DnsRecordType::MX,
+            28 => DnsRecordType::AAAA,
+            _ => DnsRecordType::A,
+        };
+
+        let answer = DnsAnswer {
+            name,
+            record_type: record_type_enum,
+            class,
+            ttl,
+            data: answer_data,
+        };
+
+        Ok((answer, offset))
+    }
+
+    fn parse_name(data: &[u8], mut offset: usize) -> Result<(String, usize), &'static str> {
+        let mut name = String::new();
+        let mut original_offset = offset;
+        let mut jumped = false;
+        let mut jumps = 0;
+
+        loop {
+            if offset >= data.len() {
+                return Err("Name extends beyond packet");
+            }
+
+            let length = data[offset];
+
+            if length == 0 {
+                if !jumped {
+                    offset += 1;
+                }
+                break;
+            }
+
+            if (length & 0xC0) == 0xC0 {
+                if !jumped {
+                    original_offset = offset + 2;
+                    jumped = true;
+                }
+
+                if offset + 1 >= data.len() {
+                    return Err("Compressed pointer out of bounds");
+                }
+
+                let pointer = ((length & 0x3F) as u16) << 8 | data[offset + 1] as u16;
+                offset = pointer as usize;
+                jumps += 1;
+
+                if jumps > 10 {
+                    return Err("Too many compression jumps");
+                }
+                continue;
+            }
+
+            offset += 1;
+
+            if offset + length as usize > data.len() {
+                return Err("Label extends beyond packet");
+            }
+
+            if !name.is_empty() {
+                name.push('.');
+            }
+
+            let label = core::str::from_utf8(&data[offset..offset + length as usize])
+                .map_err(|_| "Invalid UTF-8 in domain name")?;
+            name.push_str(label);
+            offset += length as usize;
+        }
+
+        Ok((name, if jumped { original_offset } else { offset }))
+    }
 }
 
-// DNS клиент с реальными сетевыми возможностями
+// Глобальный реестр ожидаемых ответов
+static PENDING_QUERIES: Mutex<BTreeMap<u16, (String, DnsRecordType)>> = Mutex::new(BTreeMap::new());
+static QUERY_RESPONSES: Mutex<BTreeMap<u16, Result<crate::network::Ipv4Address, &'static str>>> =
+    Mutex::new(BTreeMap::new());
+
+// DNS клиент
 pub struct DnsClient {
     cache: BTreeMap<String, (crate::network::Ipv4Address, u64, u32)>, // (IP, expire_time, TTL)
     query_id_counter: u16,
@@ -264,24 +458,31 @@ impl DnsClient {
                 crate::serial_println!("DNS: Cache hit for {} -> {}", domain, ip);
                 return Ok(*ip);
             } else {
-                // Удаляем устаревшую запись
                 self.cache.remove(domain);
             }
         }
 
         self.cache_misses += 1;
-        crate::serial_println!("DNS: Resolving {} via real DNS query", domain);
+        crate::serial_println!("DNS: Resolving {}", domain);
 
-        // Получаем список DNS серверов из NetworkStack
-        let dns_servers = {
-            let stack = crate::network::NETWORK_STACK.lock();
-            stack.get_dns_servers()
-        };
+        // Получаем DNS серверы
+        let dns_servers = vec![
+            crate::network::Ipv4Address::new(8, 8, 8, 8), // Google DNS
+            crate::network::Ipv4Address::new(1, 1, 1, 1), // Cloudflare DNS
+            crate::network::Ipv4Address::new(208, 67, 222, 222), // OpenDNS
+        ];
 
         // Пробуем каждый DNS сервер
-        for dns_server in &dns_servers {
-            match self.send_dns_query(*dns_server, domain) {
+        for dns_server in dns_servers {
+            crate::serial_println!("DNS: Querying {} for {}", dns_server, domain);
+
+            match self.send_dns_query(dns_server, domain, DnsRecordType::A) {
                 Ok(ip) => {
+                    // Кэшируем результат
+                    let expire_time = get_current_time() + 300; // 5 минут
+                    self.cache
+                        .insert(domain.to_string(), (ip, expire_time, 300));
+
                     crate::serial_println!("DNS: Resolved {} to {} via {}", domain, ip, dns_server);
                     return Ok(ip);
                 }
@@ -292,163 +493,236 @@ impl DnsClient {
             }
         }
 
-        // Если все DNS серверы не смогли разрешить, пробуем локальную базу
-        match self.resolve_from_local_database(domain) {
-            Some(ip) => {
-                // Кэшируем на 1 час
-                let expire_time = get_current_time() + 3600;
-                self.cache
-                    .insert(domain.to_string(), (ip, expire_time, 3600));
-
-                crate::serial_println!("DNS: Resolved {} to {} from local database", domain, ip);
-                Ok(ip)
-            }
-            None => {
-                self.errors += 1;
-                Err("All DNS servers failed and domain not in local database")
-            }
-        }
+        self.errors += 1;
+        Err("All DNS servers failed")
     }
 
     fn send_dns_query(
         &mut self,
         dns_server: crate::network::Ipv4Address,
         domain: &str,
+        record_type: DnsRecordType,
     ) -> Result<crate::network::Ipv4Address, &'static str> {
         // Создаем DNS запрос
-        let dns_packet = DnsPacket::new_query(domain);
+        let dns_packet = DnsPacket::new_query(domain, record_type);
+        let query_id = dns_packet.header.id;
         let dns_data = dns_packet.to_bytes();
 
-        crate::serial_println!("DNS: Sending query for {} to {}", domain, dns_server);
-        crate::serial_println!("DNS: Query packet size: {} bytes", dns_data.len());
+        crate::serial_println!(
+            "DNS: Sending {} byte query to {}",
+            dns_data.len(),
+            dns_server
+        );
 
-        // Отправляем UDP пакет через сетевой стек
-        let src_port = 32768 + (self.query_id_counter % 32768); // Динамический порт
+        // Регистрируем ожидаемый ответ
+        {
+            let mut pending = PENDING_QUERIES.lock();
+            pending.insert(query_id, (domain.to_string(), record_type));
+        }
+
+        // Отправляем UDP пакет
+        let src_port = 32768 + (self.query_id_counter % 32768);
 
         {
             let mut stack = crate::network::NETWORK_STACK.lock();
-
             if !stack.is_initialized {
                 return Err("Network not initialized");
             }
 
-            // Отправляем реальный UDP пакет
-            stack.send_udp_packet(dns_server, src_port, DNS_PORT, dns_data)?;
+            // Создаем UDP пакет
+            if let Err(e) = self.send_udp_dns_query(&mut stack, dns_server, src_port, dns_data) {
+                return Err(e);
+            }
         }
 
         self.queries_sent += 1;
         self.query_id_counter = self.query_id_counter.wrapping_add(1);
 
-        // В реальной реализации здесь был бы ожидание ответа с таймаутом
-        // Для демонстрации используем локальную базу данных
-        self.simulate_dns_response(domain)
+        // Ожидаем ответ
+        self.wait_for_response(query_id, DNS_QUERY_TIMEOUT)
     }
 
-    // Симулируем DNS ответ, но с реальной отправкой пакетов
-    fn simulate_dns_response(
+    fn send_udp_dns_query(
+        &self,
+        stack: &mut crate::network::NetworkStack,
+        dns_server: crate::network::Ipv4Address,
+        src_port: u16,
+        dns_data: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        // Создаем UDP заголовок
+        let mut udp_packet = Vec::new();
+        udp_packet.extend_from_slice(&src_port.to_be_bytes()); // Source port
+        udp_packet.extend_from_slice(&DNS_PORT.to_be_bytes()); // Destination port
+        let udp_length = 8 + dns_data.len();
+        udp_packet.extend_from_slice(&(udp_length as u16).to_be_bytes()); // Length
+        udp_packet.extend_from_slice(&[0, 0]); // Checksum (0 for now)
+        udp_packet.extend_from_slice(&dns_data); // DNS data
+
+        // Создаем IP заголовок
+        let mut ip_packet = Vec::new();
+        ip_packet.push(0x45); // Version 4, IHL 5
+        ip_packet.push(0); // Type of Service
+        let total_length = 20 + udp_packet.len();
+        ip_packet.extend_from_slice(&(total_length as u16).to_be_bytes());
+        ip_packet.extend_from_slice(&get_ip_id().to_be_bytes()); // ID
+        ip_packet.extend_from_slice(&0x4000u16.to_be_bytes()); // Flags + Fragment offset
+        ip_packet.push(64); // TTL
+        ip_packet.push(17); // Protocol (UDP)
+        ip_packet.extend_from_slice(&[0, 0]); // Header checksum (calculate later)
+        ip_packet.extend_from_slice(&stack.ip_address.octets()); // Source IP
+        ip_packet.extend_from_slice(&dns_server.octets()); // Destination IP
+
+        // Вычисляем IP checksum
+        let checksum = calculate_ip_checksum(&ip_packet);
+        ip_packet[10] = (checksum >> 8) as u8;
+        ip_packet[11] = checksum as u8;
+
+        // Добавляем UDP payload
+        ip_packet.extend_from_slice(&udp_packet);
+
+        // Определяем MAC назначения
+        let dst_mac = if stack.is_same_network(dns_server) {
+            stack.get_mac_for_ip(dns_server)
+        } else {
+            stack.get_mac_for_ip(stack.gateway)
+        };
+
+        // Создаем Ethernet кадр
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&dst_mac.octets());
+        frame.extend_from_slice(&stack.mac_address.octets());
+        frame.extend_from_slice(&0x0800u16.to_be_bytes()); // IPv4
+        frame.extend_from_slice(&ip_packet);
+
+        // Padding
+        while frame.len() < 64 {
+            frame.push(0);
+        }
+
+        // Отправляем через драйвер
+        stack.driver.send_raw_packet(&frame)?;
+
+        crate::serial_println!("DNS: UDP query sent to {}", dns_server);
+        Ok(())
+    }
+
+    fn wait_for_response(
         &mut self,
-        domain: &str,
+        query_id: u16,
+        timeout_ms: u32,
     ) -> Result<crate::network::Ipv4Address, &'static str> {
-        // Имитируем небольшую задержку сети
-        for _ in 0..10000 {
-            core::hint::spin_loop();
-        }
+        let _start_time = get_current_time();
+        let timeout_ticks = timeout_ms as u64 / 10; // Приблизительно
 
-        match self.resolve_from_local_database(domain) {
-            Some(ip) => {
-                self.responses_received += 1;
+        // Ожидаем ответ
+        for _ in 0..timeout_ticks {
+            {
+                let mut responses = QUERY_RESPONSES.lock();
+                if let Some(result) = responses.remove(&query_id) {
+                    // Убираем из ожидающих
+                    let mut pending = PENDING_QUERIES.lock();
+                    pending.remove(&query_id);
 
-                // Кэшируем с реальным TTL
-                let ttl = 300; // 5 минут
-                let expire_time = get_current_time() + ttl as u64;
-                self.cache
-                    .insert(domain.to_string(), (ip, expire_time, ttl));
-
-                Ok(ip)
-            }
-            None => {
-                self.timeouts += 1;
-                Err("DNS query timeout or NXDOMAIN")
-            }
-        }
-    }
-
-    // Расширенная локальная база данных
-    fn resolve_from_local_database(&self, domain: &str) -> Option<crate::network::Ipv4Address> {
-        match domain.to_lowercase().as_str() {
-            // Популярные сайты
-            "google.com" | "www.google.com" => {
-                Some(crate::network::Ipv4Address::new(142, 250, 191, 14))
-            }
-            "github.com" | "www.github.com" => {
-                Some(crate::network::Ipv4Address::new(140, 82, 114, 4))
-            }
-            "stackoverflow.com" | "www.stackoverflow.com" => {
-                Some(crate::network::Ipv4Address::new(151, 101, 1, 69))
-            }
-            "rust-lang.org" | "www.rust-lang.org" => {
-                Some(crate::network::Ipv4Address::new(18, 66, 113, 44))
-            }
-            "youtube.com" | "www.youtube.com" => {
-                Some(crate::network::Ipv4Address::new(142, 250, 191, 46))
-            }
-            "facebook.com" | "www.facebook.com" => {
-                Some(crate::network::Ipv4Address::new(157, 240, 251, 35))
-            }
-            "twitter.com" | "x.com" | "www.twitter.com" => {
-                Some(crate::network::Ipv4Address::new(104, 244, 42, 129))
-            }
-            "instagram.com" | "www.instagram.com" => {
-                Some(crate::network::Ipv4Address::new(157, 240, 251, 174))
-            }
-            "reddit.com" | "www.reddit.com" => {
-                Some(crate::network::Ipv4Address::new(151, 101, 1, 140))
-            }
-            "wikipedia.org" | "en.wikipedia.org" | "www.wikipedia.org" => {
-                Some(crate::network::Ipv4Address::new(208, 80, 154, 224))
-            }
-
-            // Российские сайты
-            "yandex.ru" | "www.yandex.ru" => {
-                Some(crate::network::Ipv4Address::new(5, 255, 255, 70))
-            }
-            "mail.ru" | "www.mail.ru" => Some(crate::network::Ipv4Address::new(94, 100, 180, 200)),
-            "vk.com" | "www.vk.com" => Some(crate::network::Ipv4Address::new(87, 240, 139, 194)),
-            "ok.ru" | "www.ok.ru" => Some(crate::network::Ipv4Address::new(217, 20, 155, 58)),
-
-            // Технологические компании
-            "microsoft.com" | "www.microsoft.com" => {
-                Some(crate::network::Ipv4Address::new(20, 112, 250, 133))
-            }
-            "apple.com" | "www.apple.com" => {
-                Some(crate::network::Ipv4Address::new(17, 142, 160, 59))
-            }
-            "amazon.com" | "www.amazon.com" => {
-                Some(crate::network::Ipv4Address::new(176, 32, 103, 205))
-            }
-            "netflix.com" | "www.netflix.com" => {
-                Some(crate::network::Ipv4Address::new(18, 184, 176, 78))
-            }
-            "cloudflare.com" | "www.cloudflare.com" => {
-                Some(crate::network::Ipv4Address::new(104, 16, 132, 229))
-            }
-
-            // DNS серверы
-            "dns.google" | "dns.google.com" => Some(crate::network::Ipv4Address::new(8, 8, 8, 8)),
-            "one.one.one.one" | "1.1.1.1" => Some(crate::network::Ipv4Address::new(1, 1, 1, 1)),
-
-            // Локальные адреса
-            "localhost" => Some(crate::network::Ipv4Address::new(127, 0, 0, 1)),
-
-            _ => {
-                // Для неизвестных доменов генерируем правдоподобный IP
-                if domain.contains('.') {
-                    Some(generate_plausible_ip(domain))
-                } else {
-                    None
+                    self.responses_received += 1;
+                    return result.map_err(|_e| {
+                        self.errors += 1;
+                        "DNS query failed"
+                    });
                 }
             }
+
+            // Небольшая задержка
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
         }
+
+        // Таймаут
+        {
+            let mut pending = PENDING_QUERIES.lock();
+            pending.remove(&query_id);
+        }
+
+        self.timeouts += 1;
+        crate::serial_println!("DNS: Query timeout for ID {}", query_id);
+        Err("DNS query timeout")
+    }
+
+    // Обработчик входящих DNS ответов (вызывается из сетевого драйвера)
+    pub fn handle_dns_response(data: &[u8]) -> Result<(), &'static str> {
+        let packet = DnsPacket::from_bytes(data)?;
+
+        if !packet.header.is_response() {
+            return Err("Not a DNS response");
+        }
+
+        let query_id = packet.header.id;
+        crate::serial_println!("DNS: Received response for query ID {}", query_id);
+
+        // Проверяем, ожидаем ли мы этот ответ
+        let expected_domain = {
+            let pending = PENDING_QUERIES.lock();
+            pending.get(&query_id).map(|(domain, _)| domain.clone())
+        };
+
+        let expected_domain = match expected_domain {
+            Some(domain) => domain,
+            None => {
+                crate::serial_println!("DNS: Unexpected response ID {}", query_id);
+                return Err("Unexpected DNS response");
+            }
+        };
+
+        // Обрабатываем ответы
+        let result = if packet.header.response_code() != 0 {
+            "DNS server error"
+        } else if packet.answers.is_empty() {
+            "No DNS answers"
+        } else {
+            // Ищем A-запись
+            for answer in &packet.answers {
+                match answer.record_type {
+                    DnsRecordType::A => {
+                        if let Some(ip) = answer.get_ipv4() {
+                            crate::serial_println!(
+                                "DNS: Found A record: {} -> {}",
+                                expected_domain,
+                                ip
+                            );
+                            return Self::store_response(query_id, Ok(ip));
+                        }
+                    }
+                    DnsRecordType::CNAME => {
+                        if let Some(cname) = answer.get_cname() {
+                            crate::serial_println!(
+                                "DNS: Found CNAME: {} -> {}",
+                                expected_domain,
+                                cname
+                            );
+                            // Для CNAME нужен дополнительный запрос, пока пропускаем
+                        }
+                    }
+                    _ => {
+                        crate::serial_println!(
+                            "DNS: Skipping record type {:?}",
+                            answer.record_type
+                        );
+                    }
+                }
+            }
+            "No usable A records found"
+        };
+
+        Self::store_response(query_id, Err(result))
+    }
+
+    fn store_response(
+        query_id: u16,
+        result: Result<crate::network::Ipv4Address, &'static str>,
+    ) -> Result<(), &'static str> {
+        let mut responses = QUERY_RESPONSES.lock();
+        responses.insert(query_id, result);
+        Ok(())
     }
 
     pub fn clear_cache(&mut self) {
@@ -462,187 +736,10 @@ impl DnsClient {
             .map(|(domain, (ip, expire, _ttl))| (domain.clone(), *ip, *expire))
             .collect()
     }
-
-    pub fn get_stats(&self) -> DnsStats {
-        DnsStats {
-            cache_size: self.cache.len(),
-            queries_sent: self.queries_sent,
-            responses_received: self.responses_received,
-            cache_hits: self.cache_hits,
-            cache_misses: self.cache_misses,
-            timeouts: self.timeouts,
-            errors: self.errors,
-        }
-    }
-
-    pub fn flush_expired_entries(&mut self) {
-        let current_time = get_current_time();
-        self.cache
-            .retain(|_domain, (_ip, expire_time, _ttl)| *expire_time > current_time);
-    }
-}
-
-#[derive(Debug)]
-pub struct DnsStats {
-    pub cache_size: usize,
-    pub queries_sent: u64,
-    pub responses_received: u64,
-    pub cache_hits: u64,
-    pub cache_misses: u64,
-    pub timeouts: u64,
-    pub errors: u64,
 }
 
 // Вспомогательные функции
-fn encode_domain_name(domain: &str) -> Vec<u8> {
-    let mut encoded = Vec::new();
-
-    for label in domain.split('.') {
-        if label.len() > DNS_MAX_LABEL_SIZE {
-            break; // Слишком длинная метка
-        }
-
-        encoded.push(label.len() as u8);
-        encoded.extend_from_slice(label.as_bytes());
-    }
-
-    encoded.push(0); // Завершающий нуль
-    encoded
-}
-
-fn parse_question(data: &[u8], offset: usize) -> Result<(DnsQuestion, usize), &'static str> {
-    let (name, new_offset) = parse_domain_name(data, offset)?;
-
-    if new_offset + 4 > data.len() {
-        return Err("Question too short");
-    }
-
-    let record_type = BigEndian::read_u16(&data[new_offset..new_offset + 2]);
-    let _class = BigEndian::read_u16(&data[new_offset + 2..new_offset + 4]);
-
-    let question = DnsQuestion {
-        name,
-        record_type: DnsRecordType::from(record_type),
-        class: DnsClass::Internet,
-    };
-
-    Ok((question, new_offset + 4))
-}
-
-fn parse_answer(data: &[u8], offset: usize) -> Result<(DnsAnswer, usize), &'static str> {
-    let (name, mut new_offset) = parse_domain_name(data, offset)?;
-
-    if new_offset + 10 > data.len() {
-        return Err("Answer too short");
-    }
-
-    let record_type = BigEndian::read_u16(&data[new_offset..new_offset + 2]);
-    let _class = BigEndian::read_u16(&data[new_offset + 2..new_offset + 4]);
-    let ttl = BigEndian::read_u32(&data[new_offset + 4..new_offset + 8]);
-    let data_length = BigEndian::read_u16(&data[new_offset + 8..new_offset + 10]);
-
-    new_offset += 10;
-
-    if new_offset + data_length as usize > data.len() {
-        return Err("Answer data too short");
-    }
-
-    let answer_data = data[new_offset..new_offset + data_length as usize].to_vec();
-
-    let answer = DnsAnswer {
-        name,
-        record_type: DnsRecordType::from(record_type),
-        class: DnsClass::Internet,
-        ttl,
-        data: answer_data,
-    };
-
-    Ok((answer, new_offset + data_length as usize))
-}
-
-fn parse_domain_name(data: &[u8], offset: usize) -> Result<(String, usize), &'static str> {
-    let mut name = String::new();
-    let mut current_offset = offset;
-    let mut jumped = false;
-    let mut original_offset = offset;
-    let mut jumps = 0;
-
-    loop {
-        if current_offset >= data.len() {
-            return Err("Domain name extends beyond packet");
-        }
-
-        let length = data[current_offset];
-
-        if length == 0 {
-            if !jumped {
-                original_offset = current_offset + 1;
-            }
-            break;
-        }
-
-        if (length & 0xC0) == 0xC0 {
-            // Указатель на сжатое имя
-            if !jumped {
-                original_offset = current_offset + 2;
-                jumped = true;
-            }
-
-            let pointer = ((length & 0x3F) as u16) << 8 | data[current_offset + 1] as u16;
-            current_offset = pointer as usize;
-
-            jumps += 1;
-            if jumps > 5 {
-                return Err("Too many jumps in domain name");
-            }
-            continue;
-        }
-
-        current_offset += 1;
-
-        if current_offset + length as usize > data.len() {
-            return Err("Domain label extends beyond packet");
-        }
-
-        if !name.is_empty() {
-            name.push('.');
-        }
-
-        let label = core::str::from_utf8(&data[current_offset..current_offset + length as usize])
-            .map_err(|_| "Invalid UTF-8 in domain name")?;
-        name.push_str(label);
-
-        current_offset += length as usize;
-    }
-
-    Ok((name, original_offset))
-}
-
-fn generate_plausible_ip(domain: &str) -> crate::network::Ipv4Address {
-    // Генерируем правдоподобный IP на основе хэша доменного имени
-    let mut hash = 0u32;
-    for byte in domain.bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
-    }
-
-    // Используем диапазоны, типичные для хостинга
-    let ranges = [
-        (104, 16),  // Cloudflare
-        (151, 101), // Fastly
-        (13, 107),  // Amazon AWS
-        (172, 217), // Google
-        (157, 240), // Facebook
-        (185, 199), // European hosting
-        (198, 54),  // North American hosting
-    ];
-
-    let range_idx = (hash % ranges.len() as u32) as usize;
-    let (a, b) = ranges[range_idx];
-
-    crate::network::Ipv4Address::new(a, b, ((hash >> 16) % 256) as u8, ((hash >> 8) % 256) as u8)
-}
-
-fn get_dns_id() -> u16 {
+fn get_dns_query_id() -> u16 {
     static mut COUNTER: u16 = 1;
     unsafe {
         COUNTER = COUNTER.wrapping_add(1);
@@ -650,8 +747,33 @@ fn get_dns_id() -> u16 {
     }
 }
 
+fn get_ip_id() -> u16 {
+    static mut COUNTER: u16 = 1;
+    unsafe {
+        COUNTER = COUNTER.wrapping_add(1);
+        COUNTER
+    }
+}
+
+fn calculate_ip_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0u32;
+
+    for i in (0..header.len()).step_by(2) {
+        if i + 1 < header.len() {
+            sum += ((header[i] as u32) << 8) + (header[i + 1] as u32);
+        } else {
+            sum += (header[i] as u32) << 8;
+        }
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    !(sum as u16)
+}
+
 fn get_current_time() -> u64 {
-    // Упрощенная функция времени - в реальной ОС использовался бы системный таймер
     static mut TIME: u64 = 0;
     unsafe {
         TIME += 1;

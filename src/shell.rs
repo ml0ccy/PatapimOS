@@ -40,85 +40,17 @@ pub fn handle_key(character: char) {
             if !buffer.is_empty() {
                 buffer.pop();
                 crate::vga_buffer::delete_byte();
-                // Больше не перерисовываем всю строку - просто удаляем символ
             }
         } else if character.is_ascii() && !character.is_control() {
             buffer.push(character);
-            // Определяем цвет для текущего символа
-            let color = get_char_color(buffer, buffer.len() - 1);
-            let mut char_string = String::new();
-            char_string.push(character);
-            crate::vga_buffer::write_colored_text(&char_string, color);
+            // Просто выводим символ без цветовой подсветки
+            print!("{}", character);
         }
     }
 }
 
 fn print_prompt() {
     crate::vga_buffer::write_colored_text("> ", Color::Yellow);
-}
-
-fn get_command_parts(buffer: &str) -> Vec<&str> {
-    buffer.split_whitespace().collect()
-}
-
-fn get_color_for_part(command: &str, part_index: usize) -> Color {
-    match command {
-        "echo" => {
-            if part_index == 0 {
-                Color::Cyan // команда
-            } else {
-                Color::Magenta // текст
-            }
-        }
-        "write" => {
-            if part_index == 0 {
-                Color::Cyan // команда
-            } else if part_index == 1 {
-                Color::Green // путь
-            } else {
-                Color::Magenta // содержимое
-            }
-        }
-        "mkdir" | "touch" | "cat" | "rm" | "rmdir" | "stat" | "ls" => {
-            if part_index == 0 {
-                Color::Cyan // команда
-            } else {
-                Color::Green // путь
-            }
-        }
-        "help" | "?" | "clear" | "cls" | "version" | "ver" | "meminfo" | "pwd" | "tree"
-        | "diskinfo" | "reboot" => {
-            Color::Cyan // только команда
-        }
-        _ => {
-            if part_index == 0 {
-                Color::LightRed // неизвестная команда
-            } else {
-                Color::White // аргументы
-            }
-        }
-    }
-}
-
-// Улучшенная функция для определения цвета символа
-fn get_char_color(buffer: &str, char_index: usize) -> Color {
-    let parts = get_command_parts(buffer);
-    if parts.is_empty() {
-        return Color::White;
-    }
-
-    let command = parts[0];
-    let mut current_pos = 0;
-
-    // Определяем, к какой части относится символ
-    for (part_idx, part) in parts.iter().enumerate() {
-        if char_index >= current_pos && char_index < current_pos + part.len() {
-            return get_color_for_part(command, part_idx);
-        }
-        current_pos += part.len() + 1; // +1 для пробела
-    }
-
-    Color::White
 }
 
 fn process_command(cmd: &str) {

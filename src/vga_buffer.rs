@@ -138,26 +138,6 @@ impl Writer {
         self.write_string(text);
         self.color_code = old_color;
     }
-
-    pub fn set_color(&mut self, foreground: Color, background: Color) {
-        self.color_code = ColorCode::new(foreground, background);
-    }
-
-    pub fn reset_color(&mut self) {
-        self.color_code = ColorCode::new(Color::Yellow, Color::Black);
-    }
-
-    // Добавляем метод для получения текущей позиции курсора
-    pub fn get_cursor_position(&self) -> (usize, usize) {
-        (BUFFER_HEIGHT - 1, self.column_position)
-    }
-
-    // Добавляем метод для установки позиции курсора
-    pub fn set_cursor_position(&mut self, row: usize, col: usize) {
-        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
-            self.column_position = col;
-        }
-    }
 }
 
 impl fmt::Write for Writer {
@@ -211,48 +191,4 @@ pub fn delete_byte() {
 pub fn write_colored_text(text: &str, color: Color) {
     let mut writer = WRITER.lock();
     writer.write_colored(text, color);
-}
-
-pub fn set_text_color(foreground: Color, background: Color) {
-    let mut writer = WRITER.lock();
-    writer.set_color(foreground, background);
-}
-
-pub fn reset_text_color() {
-    let mut writer = WRITER.lock();
-    writer.reset_color();
-}
-
-// Улучшенная функция для получения цвета по имени с поддержкой большего количества вариантов
-pub fn get_color_enum(name: &str) -> Option<Color> {
-    match name.to_lowercase().as_str() {
-        "black" => Some(Color::Black),
-        "blue" | "darkblue" => Some(Color::Blue),
-        "green" | "darkgreen" => Some(Color::Green),
-        "cyan" | "darkcyan" => Some(Color::Cyan),
-        "red" | "darkred" => Some(Color::Red),
-        "magenta" | "darkmagenta" | "purple" => Some(Color::Magenta),
-        "brown" | "darkyellow" => Some(Color::Brown),
-        "lightgray" | "gray" | "grey" | "lightgrey" => Some(Color::LightGray),
-        "darkgray" | "darkgrey" => Some(Color::DarkGray),
-        "lightblue" => Some(Color::LightBlue),
-        "lightgreen" => Some(Color::LightGreen),
-        "lightcyan" => Some(Color::LightCyan),
-        "lightred" => Some(Color::LightRed),
-        "pink" | "lightmagenta" => Some(Color::Pink),
-        "yellow" => Some(Color::Yellow),
-        "white" => Some(Color::White),
-        _ => None,
-    }
-}
-
-// Добавляем функции для работы с курсором
-pub fn get_cursor_position() -> (usize, usize) {
-    let writer = WRITER.lock();
-    writer.get_cursor_position()
-}
-
-pub fn set_cursor_position(row: usize, col: usize) {
-    let mut writer = WRITER.lock();
-    writer.set_cursor_position(row, col);
 }

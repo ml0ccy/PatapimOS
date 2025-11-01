@@ -80,8 +80,19 @@ impl Writer {
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
             match byte {
+                // Расширенный диапазон ASCII и улучшенная обработка UTF-8
                 0x20..=0x7e | b'\n' => self.write_byte(byte),
-                _ => self.write_byte(0xfe),
+                // Для non-ASCII символов пытаемся найти подходящую замену
+                _ => {
+                    // Проверяем, является ли это частью UTF-8 последовательности
+                    if byte & 0x80 != 0 {
+                        // Это UTF-8, заменяем на знак вопроса вместо квадрата
+                        self.write_byte(b'?');
+                    } else {
+                        // Обычный non-printable ASCII, заменяем на точку
+                        self.write_byte(b'.');
+                    }
+                }
             }
         }
     }
@@ -134,6 +145,18 @@ impl Writer {
 
     pub fn reset_color(&mut self) {
         self.color_code = ColorCode::new(Color::Yellow, Color::Black);
+    }
+
+    // Добавляем метод для получения текущей позиции курсора
+    pub fn get_cursor_position(&self) -> (usize, usize) {
+        (BUFFER_HEIGHT - 1, self.column_position)
+    }
+
+    // Добавляем метод для установки позиции курсора
+    pub fn set_cursor_position(&mut self, row: usize, col: usize) {
+        if row < BUFFER_HEIGHT && col < BUFFER_WIDTH {
+            self.column_position = col;
+        }
     }
 }
 
@@ -200,24 +223,36 @@ pub fn reset_text_color() {
     writer.reset_color();
 }
 
+// Улучшенная функция для получения цвета по имени с поддержкой большего количества вариантов
 pub fn get_color_enum(name: &str) -> Option<Color> {
     match name.to_lowercase().as_str() {
         "black" => Some(Color::Black),
-        "blue" => Some(Color::Blue),
-        "green" => Some(Color::Green),
-        "cyan" => Some(Color::Cyan),
-        "red" => Some(Color::Red),
-        "magenta" => Some(Color::Magenta),
-        "brown" => Some(Color::Brown),
-        "lightgray" | "gray" => Some(Color::LightGray),
-        "darkgray" => Some(Color::DarkGray),
+        "blue" | "darkblue" => Some(Color::Blue),
+        "green" | "darkgreen" => Some(Color::Green),
+        "cyan" | "darkcyan" => Some(Color::Cyan),
+        "red" | "darkred" => Some(Color::Red),
+        "magenta" | "darkmagenta" | "purple" => Some(Color::Magenta),
+        "brown" | "darkyellow" => Some(Color::Brown),
+        "lightgray" | "gray" | "grey" | "lightgrey" => Some(Color::LightGray),
+        "darkgray" | "darkgrey" => Some(Color::DarkGray),
         "lightblue" => Some(Color::LightBlue),
         "lightgreen" => Some(Color::LightGreen),
         "lightcyan" => Some(Color::LightCyan),
         "lightred" => Some(Color::LightRed),
-        "pink" => Some(Color::Pink),
+        "pink" | "lightmagenta" => Some(Color::Pink),
         "yellow" => Some(Color::Yellow),
         "white" => Some(Color::White),
         _ => None,
     }
+}
+
+// Добавляем функции для работы с курсором
+pub fn get_cursor_position() -> (usize, usize) {
+    let writer = WRITER.lock();
+    writer.get_cursor_position()
+}
+
+pub fn set_cursor_position(row: usize, col: usize) {
+    let mut writer = WRITER.lock();
+    writer.set_cursor_position(row, col);
 }

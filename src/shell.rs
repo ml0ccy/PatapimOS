@@ -2,15 +2,21 @@ use crate::vga_buffer::Color;
 use crate::{print, println, serial_println};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 const BACKSPACE: u8 = 8;
 
-pub static mut COMMAND_BUFFER: Option<String> = None;
-pub static mut CURRENT_PATH: &'static str = "/";
+// Безопасные глобальные переменные с использованием Mutex
+lazy_static! {
+    static ref COMMAND_BUFFER: Mutex<Option<String>> = Mutex::new(None);
+    static ref CURRENT_PATH: Mutex<String> = Mutex::new("/".to_string());
+}
 
 pub fn shell_loop() -> ! {
-    unsafe {
-        COMMAND_BUFFER = Some(String::new());
+    {
+        let mut buffer = COMMAND_BUFFER.lock();
+        *buffer = Some(String::new());
     }
 
     print_prompt();
@@ -21,26 +27,28 @@ pub fn shell_loop() -> ! {
 }
 
 pub fn handle_key(character: char) {
-    unsafe {
-        if let Some(ref mut buffer) = COMMAND_BUFFER {
-            if character == '\n' {
-                println!();
-                process_command(buffer.trim());
-                buffer.clear();
-                print_prompt();
-            } else if character as u8 == BACKSPACE {
-                if !buffer.is_empty() {
-                    buffer.pop();
-                    crate::vga_buffer::delete_byte();
-                    // Перерисовываем оставшийся текст с правильными цветами
-                    if !buffer.is_empty() {
-                        redraw_command_line(buffer);
-                    }
-                }
-            } else if character.is_ascii() && !character.is_control() {
-                buffer.push(character);
-                print_char_colored(buffer);
+    let mut buffer_guard = COMMAND_BUFFER.lock();
+    if let Some(ref mut buffer) = *buffer_guard {
+        if character == '\n' {
+            println!();
+            let cmd = buffer.trim().to_string();
+            buffer.clear();
+            drop(buffer_guard); // Освобождаем блокировку перед обработкой команды
+            process_command(&cmd);
+            print_prompt();
+        } else if character as u8 == BACKSPACE {
+            if !buffer.is_empty() {
+                buffer.pop();
+                crate::vga_buffer::delete_byte();
+                // Больше не перерисовываем всю строку - просто удаляем символ
             }
+        } else if character.is_ascii() && !character.is_control() {
+            buffer.push(character);
+            // Определяем цвет для текущего символа
+            let color = get_char_color(buffer, buffer.len() - 1);
+            let mut char_string = String::new();
+            char_string.push(character);
+            crate::vga_buffer::write_colored_text(&char_string, color);
         }
     }
 }
@@ -92,66 +100,25 @@ fn get_color_for_part(command: &str, part_index: usize) -> Color {
     }
 }
 
-fn redraw_command_line(buffer: &str) {
+// Улучшенная функция для определения цвета символа
+fn get_char_color(buffer: &str, char_index: usize) -> Color {
     let parts = get_command_parts(buffer);
-
     if parts.is_empty() {
-        return;
-    }
-
-    // Удаляем текущую строку (удаляем каждый символ команды)
-    for _ in 0..buffer.len() {
-        crate::vga_buffer::delete_byte();
-    }
-
-    // Перерисовываем всю команду с цветами
-    print_colored_command(buffer);
-}
-
-fn print_char_colored(buffer: &str) {
-    let parts = get_command_parts(buffer);
-
-    if parts.is_empty() {
-        return;
+        return Color::White;
     }
 
     let command = parts[0];
-    let current_word_index = parts.len() - 1;
+    let mut current_pos = 0;
 
-    let last_char = buffer.chars().last().unwrap_or(' ');
-
-    let color = get_color_for_part(command, current_word_index);
-
-    let mut char_string = String::new();
-    char_string.push(last_char);
-    crate::vga_buffer::write_colored_text(&char_string, color);
-}
-
-fn print_colored_command(buffer: &str) {
-    let parts = get_command_parts(buffer);
-
-    if parts.is_empty() {
-        return;
-    }
-
-    let command = parts[0];
-
-    // Выводим первую часть (команда)
-    crate::vga_buffer::write_colored_text(command, Color::Cyan);
-
-    // Выводим остальные части с соответствующими цветами
-    for (idx, part) in parts.iter().enumerate().skip(1) {
-        print!(" ");
-        let color = get_color_for_part(command, idx);
-        crate::vga_buffer::write_colored_text(part, color);
-    }
-
-    // Если в буфере есть пробел в конце, добавляем его
-    if let Some(last_char) = buffer.chars().last() {
-        if last_char == ' ' {
-            print!(" ");
+    // Определяем, к какой части относится символ
+    for (part_idx, part) in parts.iter().enumerate() {
+        if char_index >= current_pos && char_index < current_pos + part.len() {
+            return get_color_for_part(command, part_idx);
         }
+        current_pos += part.len() + 1; // +1 для пробела
     }
+
+    Color::White
 }
 
 fn process_command(cmd: &str) {
@@ -227,11 +194,12 @@ fn process_command(cmd: &str) {
             );
             println!();
         }
-        "pwd" => unsafe {
+        "pwd" => {
+            let current_path = CURRENT_PATH.lock();
             print!("Current directory: ");
-            crate::vga_buffer::write_colored_text(CURRENT_PATH, Color::Green);
+            crate::vga_buffer::write_colored_text(&*current_path, Color::Green);
             println!();
-        },
+        }
         "mkdir" => {
             if parts.len() < 2 {
                 crate::vga_buffer::write_colored_text("Usage: mkdir <path>", Color::LightRed);

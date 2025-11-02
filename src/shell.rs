@@ -1,5 +1,6 @@
 use crate::vga_buffer::Color;
 use crate::{print, println, serial_println};
+use alloc::format; // Добавляем импорт format!
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use lazy_static::lazy_static;

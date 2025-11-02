@@ -1,8 +1,8 @@
 // src/pasm.rs - Ассемблер PatapimOS
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {

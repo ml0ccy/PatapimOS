@@ -1,6 +1,7 @@
 // src/linker.rs - Линкер PatapimOS
 use crate::pasm::{ObjectFile, Relocation, RelocationType, Symbol};
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 

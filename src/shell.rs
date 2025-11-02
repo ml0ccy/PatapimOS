@@ -5,11 +5,17 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+// Добавляем импорты для новой системы исполняемых файлов
+use crate::executor::Executor;
+use crate::linker::Linker;
+use crate::pasm::Assembler;
+
 const BACKSPACE: u8 = 8;
 
 lazy_static! {
     static ref COMMAND_BUFFER: Mutex<Option<String>> = Mutex::new(None);
     static ref CURRENT_PATH: Mutex<String> = Mutex::new("/".to_string());
+    static ref EXECUTOR: Mutex<Executor> = Mutex::new(Executor::new());
 }
 
 pub fn shell_loop() -> ! {
@@ -92,6 +98,14 @@ fn process_command(cmd: &str) {
             println!("  stat <path>          - Show file information");
             println!();
 
+            crate::vga_buffer::write_colored_text("Development Tools:", Color::LightCyan);
+            println!("  pasm <file.asm> [out.o]  - Assemble .asm to .o object file");
+            println!("  plink <file.o> [-o out.pim] - Link .o files to .pim executable");
+            println!("  <file.pim> [args]    - Execute .pim program");
+            println!("  ps                   - List running processes");
+            println!("  kill <pid>           - Terminate process");
+            println!();
+
             crate::vga_buffer::write_colored_text("Real Network Commands:", Color::Magenta);
             println!("  ping <host>          - Ping a remote host or domain");
             println!("  nslookup <host>      - Resolve domain name to IP");
@@ -112,6 +126,71 @@ fn process_command(cmd: &str) {
             println!("  ✓ Real DNS resolution with UDP queries");
             println!("  ✓ ARP protocol support");
             println!("  ✓ Network packet transmission");
+            println!();
+
+            crate::vga_buffer::write_colored_text("Development Features:", Color::LightGreen);
+            println!("  ✓ Native assembler (pasm) - similar to NASM");
+            println!("  ✓ Native linker for .pim executables");
+            println!("  ✓ Process execution system");
+            println!("  ✓ System calls support");
+        }
+
+        // Команда ассемблера
+        "pasm" => handle_pasm(&parts),
+
+        // Команда линкера
+        "plink" => handle_plink(&parts),
+
+        // Список процессов
+        "ps" => {
+            let executor = EXECUTOR.lock();
+            let processes = executor.list_processes();
+
+            if processes.is_empty() {
+                println!("No running processes");
+            } else {
+                crate::vga_buffer::write_colored_text("Running Processes:", Color::White);
+                println!();
+                println!("PID   STATUS");
+                println!("---   ------");
+                for pid in processes {
+                    if let Some(context) = executor.get_process_info(pid) {
+                        println!("{:<5} RUNNING", context.pid);
+                    }
+                }
+            }
+        }
+
+        // Завершение процесса
+        "kill" => {
+            if parts.len() < 2 {
+                crate::vga_buffer::write_colored_text("Usage: kill <pid>", Color::LightRed);
+                println!();
+                return;
+            }
+
+            if let Ok(pid) = parts[1].parse::<u32>() {
+                let mut executor = EXECUTOR.lock();
+                match executor.terminate_process(pid) {
+                    Ok(_) => {
+                        crate::vga_buffer::write_colored_text(
+                            &format!("✓ Process {} terminated", pid),
+                            Color::Green,
+                        );
+                        println!();
+                    }
+                    Err(_) => {
+                        crate::vga_buffer::write_colored_text(
+                            &format!("✗ Process {} not found", pid),
+                            Color::Red,
+                        );
+                        println!();
+                    }
+                }
+            } else {
+                crate::vga_buffer::write_colored_text("✗ Invalid PID", Color::Red);
+                println!();
+            }
         }
 
         "ping" => {
@@ -481,7 +560,7 @@ fn process_command(cmd: &str) {
             );
             println!();
             crate::vga_buffer::write_colored_text(
-                "║          Real Network Stack Edition               ║",
+                "║      Real Network Stack & Development Edition     ║",
                 Color::Blue,
             );
             println!();
@@ -504,6 +583,14 @@ fn process_command(cmd: &str) {
             println!("• Network statistics & monitoring");
             println!("• File system with RAM disk");
             println!("• Memory management & heap allocation");
+            println!();
+
+            crate::vga_buffer::write_colored_text("Development Features:", Color::LightGreen);
+            println!("• Native assembler (pasm) - PatapimOS Assembly");
+            println!("• Native linker for .pim executables");
+            println!("• Process execution system");
+            println!("• System calls support");
+            println!("• Real executable format (.pim files)");
         }
 
         "meminfo" => {
@@ -526,6 +613,12 @@ fn process_command(cmd: &str) {
                 "  PCI device table: {} entries",
                 crate::pci::get_all_network_devices().len()
             );
+
+            let executor = EXECUTOR.lock();
+            let process_count = executor.list_processes().len();
+            if process_count > 0 {
+                println!("  Running processes: {}", process_count);
+            }
         }
 
         "pwd" => {
@@ -676,6 +769,20 @@ fn process_command(cmd: &str) {
                                 crate::vga_buffer::write_colored_text("[DIR] ", Color::Blue);
                             } else {
                                 crate::vga_buffer::write_colored_text("[FILE] ", Color::Green);
+                                // Показываем тип файла по расширению
+                                if name.ends_with(".asm") {
+                                    crate::vga_buffer::write_colored_text(
+                                        "[ASM] ",
+                                        Color::LightCyan,
+                                    );
+                                } else if name.ends_with(".o") {
+                                    crate::vga_buffer::write_colored_text("[OBJ] ", Color::Yellow);
+                                } else if name.ends_with(".pim") {
+                                    crate::vga_buffer::write_colored_text(
+                                        "[EXE] ",
+                                        Color::LightGreen,
+                                    );
+                                }
                             }
                             crate::vga_buffer::write_colored_text(&name, Color::Yellow);
                             crate::vga_buffer::write_colored_text(
@@ -816,6 +923,9 @@ fn process_command(cmd: &str) {
 
         "" => {}
 
+        // Проверяем, если это исполняемый .pim файл
+        _ if parts[0].ends_with(".pim") => handle_exec(&parts),
+
         _ => {
             crate::vga_buffer::write_colored_text("✗ Unknown command: ", Color::Red);
             print!("'");
@@ -823,10 +933,436 @@ fn process_command(cmd: &str) {
             println!("'. Type 'help' for available commands.");
             println!();
             crate::vga_buffer::write_colored_text(
-                "💡 Tip: Try network commands like 'ping google.com' or 'netinfo'",
+                "💡 Tip: Try 'pasm hello.asm' to assemble code or 'hello.pim' to run programs",
                 Color::DarkGray,
             );
             println!();
         }
     }
+}
+
+// Обработчик команды ассемблера
+fn handle_pasm(args: &[&str]) {
+    if args.len() < 2 {
+        crate::vga_buffer::write_colored_text(
+            "Usage: pasm <input.asm> [output.o]",
+            Color::LightRed,
+        );
+        println!();
+        println!("Examples:");
+        println!("  pasm hello.asm          - Creates hello.o");
+        println!("  pasm program.asm prog.o - Creates prog.o");
+        return;
+    }
+
+    let input_file = args[1];
+    let output_file = if args.len() > 2 {
+        args[2].to_string()
+    } else {
+        format!("{}.o", input_file.trim_end_matches(".asm"))
+    };
+
+    crate::vga_buffer::write_colored_text("PatapimOS Assembler (pasm)", Color::Cyan);
+    println!();
+    print!("Assembling: ");
+    crate::vga_buffer::write_colored_text(input_file, Color::Yellow);
+    print!(" -> ");
+    crate::vga_buffer::write_colored_text(&output_file, Color::Green);
+    println!();
+
+    // Читаем исходный файл
+    let disk = crate::fs::RAMDISK.lock();
+    match disk.read_file(input_file) {
+        Ok(source_code) => {
+            let source = match core::str::from_utf8(&source_code) {
+                Ok(s) => s,
+                Err(_) => {
+                    crate::vga_buffer::write_colored_text(
+                        "✗ Error: Invalid UTF-8 in source file",
+                        Color::Red,
+                    );
+                    println!();
+                    return;
+                }
+            };
+
+            // Освобождаем блокировку диска перед сборкой
+            drop(disk);
+
+            let mut assembler = Assembler::new();
+            match assembler.assemble(source) {
+                Ok(object_file) => {
+                    // Сериализуем объектный файл в простом формате
+                    let mut object_data = Vec::new();
+
+                    // Магическая сигнатура объектного файла
+                    object_data.extend_from_slice(b"OBJ\0");
+
+                    // Размер кода
+                    object_data
+                        .extend_from_slice(&(object_file.instructions.len() as u32).to_le_bytes());
+
+                    // Код
+                    object_data.extend_from_slice(&object_file.instructions);
+
+                    // Размер данных
+                    object_data.extend_from_slice(&(object_file.data.len() as u32).to_le_bytes());
+
+                    // Данные
+                    object_data.extend_from_slice(&object_file.data);
+
+                    // Количество символов
+                    object_data
+                        .extend_from_slice(&(object_file.symbols.len() as u32).to_le_bytes());
+
+                    // Символы (упрощённый формат)
+                    for symbol in &object_file.symbols {
+                        let name_bytes = symbol.name.as_bytes();
+                        object_data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                        object_data.extend_from_slice(name_bytes);
+                        object_data.extend_from_slice(&symbol.address.to_le_bytes());
+                        object_data.push(0); // тип символа
+                    }
+
+                    // Сохраняем объектный файл
+                    let mut disk = crate::fs::RAMDISK.lock();
+                    match disk.write_file(&output_file, object_data) {
+                        Ok(_) => {
+                            crate::vga_buffer::write_colored_text(
+                                "✓ Assembly successful!",
+                                Color::Green,
+                            );
+                            println!();
+                            println!("  Object file: {}", output_file);
+                            println!("  Code size:   {} bytes", object_file.instructions.len());
+                            println!("  Data size:   {} bytes", object_file.data.len());
+                            println!("  Symbols:     {} entries", object_file.symbols.len());
+                        }
+                        Err(e) => {
+                            crate::vga_buffer::write_colored_text(
+                                "✗ Failed to save object file: ",
+                                Color::Red,
+                            );
+                            println!("{}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::vga_buffer::write_colored_text("✗ Assembly error: ", Color::Red);
+                    println!("{}", e);
+                }
+            }
+        }
+        Err(_) => {
+            crate::vga_buffer::write_colored_text(
+                &format!("✗ Error: Cannot read file '{}'", input_file),
+                Color::Red,
+            );
+            println!();
+        }
+    }
+}
+
+// Обработчик команды линкера
+fn handle_plink(args: &[&str]) {
+    if args.len() < 2 {
+        crate::vga_buffer::write_colored_text(
+            "Usage: plink <input.o> [input2.o ...] [-o output.pim]",
+            Color::LightRed,
+        );
+        println!();
+        println!("Examples:");
+        println!("  plink hello.o               - Creates a.pim");
+        println!("  plink main.o lib.o -o prog.pim - Creates prog.pim");
+        return;
+    }
+
+    let mut object_files = Vec::new();
+    let mut output_file = "a.pim".to_string();
+    let mut i = 1;
+
+    // Парсим аргументы
+    while i < args.len() {
+        if args[i] == "-o" && i + 1 < args.len() {
+            output_file = args[i + 1].to_string();
+            i += 2;
+        } else if args[i].ends_with(".o") {
+            object_files.push(args[i]);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    if object_files.is_empty() {
+        crate::vga_buffer::write_colored_text("✗ Error: No object files specified", Color::Red);
+        println!();
+        return;
+    }
+
+    crate::vga_buffer::write_colored_text("PatapimOS Linker (plink)", Color::Cyan);
+    println!();
+    print!("Linking: ");
+    for (i, obj_file) in object_files.iter().enumerate() {
+        if i > 0 {
+            print!(", ");
+        }
+        crate::vga_buffer::write_colored_text(obj_file, Color::Yellow);
+    }
+    print!(" -> ");
+    crate::vga_buffer::write_colored_text(&output_file, Color::Green);
+    println!();
+
+    let mut linker = Linker::new();
+    let disk = crate::fs::RAMDISK.lock();
+
+    // Загружаем объектные файлы
+    let mut load_success = true;
+    for obj_file in &object_files {
+        match disk.read_file(obj_file) {
+            Ok(obj_data) => {
+                // Десериализуем объектный файл
+                if let Ok(object_file) = deserialize_object_file(&obj_data) {
+                    linker.add_object(object_file);
+                    println!("  Loaded: {}", obj_file);
+                } else {
+                    crate::vga_buffer::write_colored_text(
+                        &format!("✗ Invalid object file: {}", obj_file),
+                        Color::Red,
+                    );
+                    println!();
+                    load_success = false;
+                    break;
+                }
+            }
+            Err(_) => {
+                crate::vga_buffer::write_colored_text(
+                    &format!("✗ Cannot read file: {}", obj_file),
+                    Color::Red,
+                );
+                println!();
+                load_success = false;
+                break;
+            }
+        }
+    }
+
+    if !load_success {
+        return;
+    }
+
+    // Освобождаем блокировку для линковки
+    drop(disk);
+
+    // Выполняем линковку
+    match linker.link() {
+        Ok(executable) => {
+            let pim_data = linker.save_executable(&executable);
+
+            // Сохраняем исполняемый файл
+            let mut disk = crate::fs::RAMDISK.lock();
+            match disk.write_file(&output_file, pim_data) {
+                Ok(_) => {
+                    crate::vga_buffer::write_colored_text("✓ Linking successful!", Color::Green);
+                    println!();
+                    println!("  Executable:  {}", output_file);
+                    println!("  Entry point: 0x{:x}", executable.header.entry_point);
+                    println!("  Code size:   {} bytes", executable.header.code_size);
+                    println!("  Data size:   {} bytes", executable.header.data_size);
+                }
+                Err(e) => {
+                    crate::vga_buffer::write_colored_text(
+                        "✗ Failed to save executable: ",
+                        Color::Red,
+                    );
+                    println!("{}", e);
+                }
+            }
+        }
+        Err(e) => {
+            crate::vga_buffer::write_colored_text("✗ Linking error: ", Color::Red);
+            println!("{}", e);
+        }
+    }
+}
+
+// Обработчик выполнения .pim файлов
+fn handle_exec(args: &[&str]) {
+    if args.is_empty() {
+        return;
+    }
+
+    let program_path = args[0];
+
+    crate::vga_buffer::write_colored_text("PatapimOS Executor", Color::Cyan);
+    println!();
+    print!("Loading: ");
+    crate::vga_buffer::write_colored_text(program_path, Color::Yellow);
+    println!();
+
+    // Читаем исполняемый файл
+    let disk = crate::fs::RAMDISK.lock();
+    match disk.read_file(program_path) {
+        Ok(pim_data) => {
+            drop(disk); // Освобождаем блокировку файловой системы
+
+            let mut executor = EXECUTOR.lock();
+            match executor.load_pim(&pim_data) {
+                Ok(pid) => {
+                    crate::vga_buffer::write_colored_text(
+                        &format!("✓ Loaded program with PID: {}", pid),
+                        Color::Green,
+                    );
+                    println!();
+
+                    println!("Executing program...");
+                    match executor.execute(pid) {
+                        Ok(_) => {
+                            crate::vga_buffer::write_colored_text(
+                                "✓ Program executed successfully",
+                                Color::Green,
+                            );
+                            println!();
+                        }
+                        Err(e) => {
+                            crate::vga_buffer::write_colored_text(
+                                "✗ Execution error: ",
+                                Color::Red,
+                            );
+                            println!("{:?}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::vga_buffer::write_colored_text("✗ Load error: ", Color::Red);
+                    println!("{:?}", e);
+                }
+            }
+        }
+        Err(_) => {
+            crate::vga_buffer::write_colored_text(
+                &format!("✗ Error: Cannot read file '{}'", program_path),
+                Color::Red,
+            );
+            println!();
+        }
+    }
+}
+
+// Вспомогательная функция для десериализации объектных файлов
+fn deserialize_object_file(data: &[u8]) -> Result<crate::pasm::ObjectFile, String> {
+    if data.len() < 4 || &data[0..4] != b"OBJ\0" {
+        return Err("Invalid object file format".to_string());
+    }
+
+    let mut offset = 4;
+
+    // Читаем размер кода
+    if offset + 4 > data.len() {
+        return Err("Truncated object file".to_string());
+    }
+    let code_size = u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as usize;
+    offset += 4;
+
+    // Читаем код
+    if offset + code_size > data.len() {
+        return Err("Truncated object file".to_string());
+    }
+    let instructions = data[offset..offset + code_size].to_vec();
+    offset += code_size;
+
+    // Читаем размер данных
+    if offset + 4 > data.len() {
+        return Err("Truncated object file".to_string());
+    }
+    let data_size = u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as usize;
+    offset += 4;
+
+    // Читаем данные
+    if offset + data_size > data.len() {
+        return Err("Truncated object file".to_string());
+    }
+    let obj_data = data[offset..offset + data_size].to_vec();
+    offset += data_size;
+
+    // Читаем количество символов
+    if offset + 4 > data.len() {
+        return Err("Truncated object file".to_string());
+    }
+    let symbol_count = u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as usize;
+    offset += 4;
+
+    // Читаем символы
+    let mut symbols = Vec::new();
+    for _ in 0..symbol_count {
+        // Длина имени
+        if offset + 4 > data.len() {
+            return Err("Truncated object file".to_string());
+        }
+        let name_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+
+        // Имя символа
+        if offset + name_len > data.len() {
+            return Err("Truncated object file".to_string());
+        }
+        let name = String::from_utf8(data[offset..offset + name_len].to_vec())
+            .map_err(|_| "Invalid symbol name")?;
+        offset += name_len;
+
+        // Адрес символа
+        if offset + 8 > data.len() {
+            return Err("Truncated object file".to_string());
+        }
+        let address = u64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]);
+        offset += 8;
+
+        // Тип символа (пропускаем пока)
+        if offset + 1 > data.len() {
+            return Err("Truncated object file".to_string());
+        }
+        offset += 1;
+
+        symbols.push(crate::pasm::Symbol {
+            name,
+            address,
+            symbol_type: crate::pasm::SymbolType::Label,
+        });
+    }
+
+    Ok(crate::pasm::ObjectFile {
+        instructions,
+        symbols,
+        relocations: Vec::new(), // Релокации пока не сериализуем
+        data: obj_data,
+    })
 }

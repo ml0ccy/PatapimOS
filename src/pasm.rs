@@ -1,7 +1,7 @@
 // src/pasm.rs - Ассемблер PatapimOS
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
@@ -52,28 +52,28 @@ pub enum Register {
     R15,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: String,
     pub address: u64,
     pub symbol_type: SymbolType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SymbolType {
     Function,
     Variable,
     Label,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Relocation {
     pub offset: u64,
     pub symbol: String,
     pub reloc_type: RelocationType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelocationType {
     Absolute,
     Relative,

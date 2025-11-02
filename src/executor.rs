@@ -1,7 +1,5 @@
 // src/executor.rs - Загрузчик и исполнитель .pim файлов
-use crate::linker::{PimExecutable, PimHeader};
-use alloc::format;
-use alloc::string::String;
+use crate::linker::PimHeader;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;
 

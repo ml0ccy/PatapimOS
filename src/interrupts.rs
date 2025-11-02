@@ -15,6 +15,7 @@ pub static PICS: Mutex<ChainedPics> =
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
+    Syscall = 0x80, // Системный вызов
 }
 
 impl InterruptIndex {
@@ -34,6 +35,7 @@ lazy_static! {
         }
         idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Syscall.as_u8()].set_handler_fn(syscall_handler);
         idt
     };
 }
@@ -54,6 +56,9 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Проверяем входящие сетевые пакеты периодически
+    crate::network::check_and_handle_incoming_packets();
+    
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
@@ -89,4 +94,16 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
+}
+
+extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
+    // Для int 0x80 регистры сохраняются на стеке в определённом порядке
+    // Полноценная реализация требует работы с сохранёнными регистрами на стеке
+    // Пока упрощённая версия - просто логируем вызов
+    crate::serial_println!("SYS: System call requested at IP: 0x{:x}", stack_frame.instruction_pointer.as_u64());
+    
+    // TODO: Полноценная реализация требует:
+    // 1. Чтения регистров из стека (rax = номер syscall, rbx/rcx/rdx = аргументы)
+    // 2. Вызова crate::executor::handle_syscall(syscall_num, &args)
+    // 3. Записи результата обратно в rax через изменение стека
 }

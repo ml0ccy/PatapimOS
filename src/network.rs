@@ -757,6 +757,31 @@ pub fn get_arp_table() -> Vec<(Ipv4Address, MacAddress)> {
         .collect()
 }
 
+// Периодическая проверка и обработка входящих сетевых пакетов
+pub fn check_and_handle_incoming_packets() {
+    // Используем try_lock() из spin::Mutex, который возвращает Option
+    let mut stack = if let Some(guard) = NETWORK_STACK.try_lock() {
+        guard
+    } else {
+        return; // Стек заблокирован, пропускаем этот тик
+    };
+
+    if !stack.is_initialized {
+        return;
+    }
+
+    // Проверяем наличие входящих пакетов от драйвера
+    if let Some(packet_data) = stack.driver.check_for_incoming_packets() {
+        let packet_len: u64 = packet_data.len() as u64;
+        if let Err(e) = stack.handle_incoming_packet(&packet_data) {
+            crate::serial_println!("NET: Error handling packet: {}", e);
+        } else {
+            stack.stats.frames_received += 1;
+            stack.stats.bytes_received += packet_len;
+        }
+    }
+}
+
 pub fn add_arp_entry(ip_str: &str, mac_str: &str) -> Result<(), &'static str> {
     let ip = Ipv4Address::from_str(ip_str)?;
 

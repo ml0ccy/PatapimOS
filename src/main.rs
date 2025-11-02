@@ -9,11 +9,14 @@ use core::panic::PanicInfo;
 
 mod allocator;
 mod dns; // Реальный DNS клиент
+mod executor; // Система выполнения программ
 mod fs;
 mod gdt;
 mod interrupts;
+mod linker; // Линкер для .pim файлов
 mod memory;
 mod network; // Полноценный сетевой стек
+mod pasm; // Ассемблер PatapimOS
 mod pci; // PCI для поиска сетевых карт
 mod serial;
 mod shell;
@@ -80,10 +83,14 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
     }
 
-    serial_println!("[OK] All systems operational - Real network stack active");
+    println!("[OK] PatapimOS assembler (pasm) initialized");
+    println!("[OK] PatapimOS linker (plink) initialized");
+    println!("[OK] .pim executable format support initialized");
+
+    serial_println!("[OK] All systems operational - Real network stack & development tools active");
     println!();
     println!("System ready! Type 'help' for available commands.");
-    println!("Network stack: REAL implementation with Ethernet/IP/UDP/TCP support");
+    println!("Features: Real network stack + Native development tools");
 
     shell::shell_loop();
 }
